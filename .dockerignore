@@ -1,0 +1,7 @@
+target/
+.git/
+.idea/
+.kilo/
+AGENTS.md
+**/*.rs.bk
+API.md
