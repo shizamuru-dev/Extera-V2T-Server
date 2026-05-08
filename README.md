@@ -1,6 +1,6 @@
 # 🎙️ Extera V2T Server
 
-> **Высокопроизводительный сервер преобразования видео в текст на Rust**
+> **Высокопроизводительный сервер преобразования аудио в текст на Rust**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
