@@ -1,178 +1,346 @@
-# 🎙️ Extera V2T Server
+# Extera V2T Server
 
-> **Высокопроизводительный сервер преобразования аудио в текст на Rust**
+Микросервисный сервер для преобразования аудиоконтента в текст на Rust. Использует **Whisper.cpp** для распознавания речи и **RabbitMQ** для асинхронной обработки задач.
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![Status](https://img.shields.io/badge/status-active-success.svg)](https://github.com/shizamuru-dev/Extera-V2T-Server)
+## 🎯 Основные возможности
 
-## 📋 Описание
+- **Асинхронная обработка** — задачи обрабатываются через очередь RabbitMQ
+- **Поддержка множественных форматов** — OGG, MP3, WAV, WebM, M4A
+- **Высокая производительность** — встроенное потоковое сохранение файлов (streaming)
+- **Масштабируемость** — несколько воркеров могут обрабатывать задачи параллельно
+- **Контроль размера файлов** — ограничение на максимальный размер загружаемого файла
+- **Автоматическая очистка** — удаление старых результатов через TTL
+- **Безопасность** — валидация имён файлов и защита от инъекций
 
-**Extera V2T Server** — это современный сервер для конвертации аудиоконтента в текстовый формат. Реализован на высокопроизводительном языке **Rust**, обеспечивая надежность, безопасность и максимальную скорость обработки.
+## 📦 Технологический стек
 
-Проект предназначен для:
-- ✅ Быстрой обработки видеофайлов
-- ✅ Экстракции текста из видеоконтента
-- ✅ Работы в высоконагруженных системах
-- ✅ Интеграции с современными приложениями
+- **Язык**: Rust 1.70+
+- **Веб-фреймворк**: Axum 0.8
+- **Message Queue**: RabbitMQ + amqprs
+- **Обработка аудио**: FFmpeg + Whisper.cpp
+- **Асинхронность**: Tokio
+- **Логирование**: Tracing
 
-## 🚀 Особенности
+## 🏗️ Архитектура
 
-- 🦀 **Написан на Rust** — безопасность и производительность без компромиссов
-- ⚡ **Высокая производительность** — эффективная обработка больших объемов данных
-- 🔒 **Безопасность** — встроенная защита от уязвимостей
-- 📦 **Легкая интеграция** — REST API для простого использования
-- 🔄 **Асинхронная обработка** — неблокирующие операции
-- 📊 **Масштабируемость** — поддержка высоконагруженных систем
-
-## 💻 Требования
-
-- **Rust** 1.70+
-- **Git** для клонирования репозитория
-- Дополнительные зависимости указаны в `Cargo.toml`
-
-## 📦 Установка
-
-### 1. Клонирование репозитория
-
-```bash
-git clone https://github.com/shizamuru-dev/Extera-V2T-Server.git
-cd Extera-V2T-Server
+```
+API Server (Axum)
+      ↓
+   [RabbitMQ Queue]
+      ↓
+Worker Process (FFmpeg + Whisper.cpp)
+      ↓
+Result JSON File
 ```
 
-### 2. Сборка проекта
+### Компоненты
+
+- **`api/`** — REST API сервер для принятия файлов и выдачи результатов
+- **`worker/`** — обработчик задач из очереди RabbitMQ
+- **`shared/`** — общие типы данных (TranscriptionTask, TranscriptionResponse)
+
+## 📋 Требования
+
+### Обязательно
+
+- **Rust** 1.70+ ([установка](https://rustup.rs/))
+- **RabbitMQ** 3.8+ (или Docker контейнер)
+- **FFmpeg** (для конвертации аудио)
+- **Whisper.cpp** (`whisper-cli` в PATH)
+- Модель Whisper.cpp (например, `ggml-small.bin`)
+
+### Опционально
+
+- **Docker** для контейнеризации
+- **Docker Compose** для развёртывания всех сервисов
+
+## 🚀 Запуск
+
+### Локальная разработка
+
+#### 1. Установка зависимостей
 
 ```bash
-cargo build --release
+# RabbitMQ (если используется Docker)
+docker run -d --name rabbitmq \
+  -p 5672:5672 \
+  -p 15672:15672 \
+  rabbitmq:3-management
+
+# FFmpeg
+# Ubuntu/Debian:
+sudo apt-get install ffmpeg
+
+# macOS:
+brew install ffmpeg
+
+# Whisper.cpp
+git clone https://github.com/ggerganov/whisper.cpp.git
+cd whisper.cpp && make
+
+# Скачать модель (например, small)
+bash ./models/download-ggml-model.sh small
 ```
 
-### 3. Запуск сервера
+#### 2. Переменные окружения
+
+Создайте файл `.env` в корне проекта:
+
+```env
+# RabbitMQ
+RABBITMQ_HOST=localhost
+RABBITMQ_USER=guest
+RABBITMQ_PASS=guest
+
+# API Server
+HOST=127.0.0.1
+
+# Log level
+RUST_LOG=info
+```
+
+#### 3. Запуск API сервера
 
 ```bash
+cd api
 cargo run --release
 ```
 
-Сервер запустится на стандартном адресе (по умолчанию `localhost:8080`).
+Сервер запустится на `http://127.0.0.1:3000`
 
-## 🔧 Конфигурация
+#### 4. Запуск воркера
 
-Создайте файл конфигурации `.env` в корневой директории проекта:
+В отдельном терминале:
 
-```env
-# Параметры сервера
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8080
-
-# Параметры обработки
-MAX_FILE_SIZE=1000000000
-WORKER_THREADS=4
-
-# Логирование
-LOG_LEVEL=info
+```bash
+cd worker
+cargo run --release
 ```
 
 ## 📡 API Примеры
 
-### Загрузка видеофайла
+### Загрузить файл для транскрибации
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/process \
-  -F "file=@video.mp4"
+curl -X POST http://127.0.0.1:3000/transcribe \
+  -F "file=@audio.mp3" \
+  -G \
+  --data-urlencode "chat_id=user_123" \
+  --data-urlencode "message_id=msg_456"
 ```
 
-### Получение статуса обработки
+**Ответ:**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "queued",
+  "file_path": "/tmp/transcribe/550e8400-e29b-41d4-a716-446655440000_audio.mp3"
+}
+```
+
+### Получить результат
 
 ```bash
-curl http://localhost:8080/api/v1/status/{task_id}
+curl http://127.0.0.1:3000/result/550e8400-e29b-41d4-a716-446655440000
 ```
 
-### Получение результата
+**Успешный ответ (когда транскрибация завершена):**
+```json
+{
+  "text": "Привет, это пример распознавания речи"
+}
+```
+
+**Ответ при обработке или не найдено:**
+```json
+{
+  "status": "processing_or_not_found"
+}
+```
+
+### Здоровье сервера
 
 ```bash
-curl http://localhost:8080/api/v1/result/{task_id}
+curl http://127.0.0.1:3000/health
 ```
 
-## 📂 Структура проекта
-
-```
-Extera-V2T-Server/
-├── src/                    # Исходный код
-│   ├── main.rs            # Точка входа
-│   ├── lib.rs             # Основная библиотека
-│   ├── api/               # API endpoints
-│   ├── processor/         # Обработчик видео
-│   └── config/            # Конфигурация
-├── tests/                 # Тесты
-├── Cargo.toml            # Зависимости проекта
-├── Cargo.lock            # Зафиксированные версии
-└── README.md             # Этот файл
+**Ответ:**
+```json
+{
+  "status": "ok",
+  "service": "transcribe-api"
+}
 ```
 
-## 🧪 Тестирование
+## ⚙️ Конфигурация
 
-Запуск всех тестов:
+### API Server
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `RABBITMQ_HOST` | Хост RabbitMQ | `localhost` |
+| `RABBITMQ_USER` | Пользователь RabbitMQ | `guest` |
+| `RABBITMQ_PASS` | Пароль RabbitMQ | `guest` |
+| `HOST` | IP адрес для привязки | `127.0.0.1` |
+
+**Жёсткие параметры в коде:**
+- Порт API: `3000`
+- Максимальный размер файла: `500 MB`
+- Максимальный размер загрузки: `500 MB`
+- Директория временных файлов: `/tmp/transcribe`
+- TTL результатов: `1 час` (удаляются автоматически)
+
+### Worker
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `RABBITMQ_HOST` | Хост RabbitMQ | `localhost` |
+| `RABBITMQ_USER` | Пользователь RabbitMQ | `guest` |
+| `RABBITMQ_PASS` | Пароль RabbitMQ | `guest` |
+
+**Жёсткие параметры:**
+- Путь к модели Whisper: `/models/ggml-small.bin`
+- Язык: `auto` (автоматическое определение)
+- QoS Prefetch: `1` задача на воркер
+
+## 🐳 Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  api:
+    build: ./api
+    ports:
+      - "3000:3000"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      HOST: 0.0.0.0
+      RUST_LOG: info
+    depends_on:
+      - rabbitmq
+    volumes:
+      - transcribe_data:/tmp/transcribe
+
+  worker:
+    build: ./worker
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RUST_LOG: info
+    depends_on:
+      - rabbitmq
+    volumes:
+      - transcribe_data:/tmp/transcribe
+      - ./models:/models
+
+volumes:
+  rabbitmq_data:
+  transcribe_data:
+```
+
+Запуск:
+```bash
+docker-compose up --build
+```
+
+## 📊 Поток обработки
+
+1. **Клиент** отправляет файл на `/transcribe` с параметрами `chat_id` и `message_id`
+2. **API Server**:
+   - Валидирует файл (размер, формат)
+   - Сохраняет файл потоком в `/tmp/transcribe`
+   - Создаёт задачу `TranscriptionTask`
+   - Отправляет задачу в RabbitMQ очередь
+   - Возвращает `task_id`
+3. **Worker** получает задачу:
+   - Конвертирует аудио в WAV 16kHz mono через FFmpeg
+   - Запускает Whisper.cpp на файле
+   - Извлекает текст из JSON результата
+   - Сохраняет результат в `/tmp/transcribe/{task_id}.json`
+   - Удаляет временные файлы
+   - Подтверждает (ACK) задачу в RabbitMQ
+4. **Клиент** получает результат, опрашивая `/result/{task_id}`
+5. **Cleanup Task** удаляет результаты старше 1 часа
+
+## 🔧 Разработка
+
+### Структура проекта
+
+```
+.
+├── api/                          # REST API сервер
+│   ├── src/
+│   │   └── main.rs
+│   └── Cargo.toml
+├── worker/                       # Обработчик задач
+│   ├── src/
+│   │   └── main.rs
+│   └── Cargo.toml
+├── shared/                       # Общие типы
+│   ├── src/
+│   │   └── lib.rs
+│   └── Cargo.toml
+├── Cargo.toml                    # Workspace manifest
+└── README.md
+```
+
+### Сборка
+
+```bash
+# Всё сразу
+cargo build --release
+
+# Конкретный модуль
+cargo build --release -p api
+cargo build --release -p worker
+```
+
+### Тесты
 
 ```bash
 cargo test
-```
-
-Запуск тестов с логированием:
-
-```bash
 RUST_LOG=debug cargo test -- --nocapture
 ```
 
-## 📈 Производительность
+## 🐛 Известные ограничения
 
-Проект оптимизирован для:
-- Обработки видеофайлов высокого качества
-- Работы с множественными запросами одновременно
-- Минимизации использования памяти
-- Максимальной скорости обработки
+- Хранилище результатов — файловая система (`/tmp/transcribe`), не масштабируется на несколько машин
+- Нет базы данных для статусов задач — может быть неточностью при отправке статуса
+- Модель Whisper жёстко кодирована на `small` — требуется изменение исходного кода для другой модели
+- Результаты удаляются через 1 час — нет постоянного хранилища
 
-## 🤝 Вклад
+## 🚀 Возможные улучшения
 
-Мы приветствуем вклад в развитие проекта! 
-
-### Как помочь:
-
-1. **Fork** репозиторий
-2. Создайте новую ветку (`git checkout -b feature/amazing-feature`)
-3. Commit ваши изменения (`git commit -m 'Add amazing feature'`)
-4. Push в ветку (`git push origin feature/amazing-feature`)
-5. Откройте Pull Request
-
-Пожалуйста, следуйте стандартам кодирования Rust и добавляйте тесты для новой функциональности.
+- [ ] Redis для кэширования статусов задач
+- [ ] PostgreSQL для хранения метаданных
+- [ ] WebSocket для real-time статуса
+- [ ] S3/MinIO для хранения файлов
+- [ ] Настройка модели Whisper через переменные окружения
+- [ ] Поддержка webhook callbacks
+- [ ] Метрики Prometheus
+- [ ] Graceful shutdown и drain очереди
 
 ## 📝 Лицензия
 
-Этот проект распространяется под лицензией MIT. Подробнее см. в файле [LICENSE](LICENSE).
+MIT
 
-## 💬 Поддержка и Связь
+## 💬 Поддержка
 
-Если у вас есть вопросы или предложения:
-
-- 📧 Откройте [Issue](https://github.com/shizamuru-dev/Extera-V2T-Server/issues)
-- 💭 Обсудите в [Discussions](https://github.com/shizamuru-dev/Extera-V2T-Server/discussions)
-- 👤 Свяжитесь с автором: [@shizamuru-dev](https://github.com/shizamuru-dev)
-
-## 📚 Документация
-
-Дополнительная документация доступна в папке `docs/`:
-- API документация
-- Примеры использования
-- Руководство по конфигурации
-
-## ✨ Благодарности
-
-Спасибо всем контрибьютерам и пользователям, помогающим улучшать этот проект!
+Вопросы и предложения:
+- [Issues](https://github.com/shizamuru-dev/Extera-V2T-Server/issues)
+- [Discussions](https://github.com/shizamuru-dev/Extera-V2T-Server/discussions)
 
 ---
 
-<div align="center">
-
-**Сделано с ❤️ на Rust**
-
-[⬆ На вверх](#-extera-v2t-server)
-
-</div>
+**Разработано на Rust** 🦀
