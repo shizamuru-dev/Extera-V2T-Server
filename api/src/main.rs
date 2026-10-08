@@ -403,7 +403,6 @@ async fn get_result(
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::response::Response {
-    // Проверяем имя файла на безопасность
     if !task_id.chars().all(|c| c.is_alphanumeric() || c == '-') {
         return (StatusCode::BAD_REQUEST, "Invalid task ID").into_response();
     }
@@ -412,16 +411,21 @@ async fn get_result(
 
     match tokio::fs::read_to_string(&result_path).await {
         Ok(json_content) => {
-            // Если файл есть, парсим его и отдаем
             match serde_json::from_str::<serde_json::Value>(&json_content) {
                 Ok(json) => Json(json).into_response(),
                 Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Invalid JSON result").into_response(),
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Файла с результатом еще нет, проверяем не лежит ли там аудио файл (значит в процессе)
-            // Это упрощенная логика. В идеале нужен Redis/DB для статусов.
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"status": "processing_or_not_found"}))).into_response()
+            // Файла с результатом еще нет — задача в очереди или обрабатывается воркером
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "task_id": task_id,
+                    "status": "processing"
+                })),
+            )
+                .into_response()
         }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error reading result").into_response(),
     }
@@ -522,7 +526,7 @@ async fn main() {
     // Создаём роутер
     let app = Router::new()
         .route("/health", get(health))
-        .route("/result/{task_id}", get(get_result))
+        .route("/result/:task_id", get(get_result))
         .route(
             "/transcribe",
             post(handle_transcribe)
