@@ -6,7 +6,8 @@ use axum::{
     routing::{get, post},
 };
 use shared::{TranscriptionResponse, TranscriptionTask};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use sha2::{Sha256, Digest};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 use tower_http::trace::TraceLayer;
@@ -164,20 +165,21 @@ impl FileStorage {
         Ok(format!("{}/{}", self.tmp_dir, unique_filename))
     }
 
-    /// Сохраняет файл потоком (streaming)
-    async fn save_file_streaming(
+    /// Сохраняет файл потоком (streaming) и одновременно вычисляет SHA256 хеш
+    async fn save_file_streaming_with_hash(
         &self,
         file_path: &str,
         mut multipart_field: axum::extract::multipart::Field<'_>,
-    ) -> Result<u64, TranscribeError> {
+    ) -> Result<(u64, String), TranscribeError> {
         let file = tokio::fs::File::create(file_path).await.map_err(|e| {
             TranscribeError::FileOperation(format!("Cannot create file: {}", e))
         })?;
         let mut file = tokio::io::BufWriter::new(file);
 
+        let mut hasher = Sha256::new();
         let mut total_bytes = 0u64;
 
-        // Потоковое чтение и запись чанков
+        // Потоковое чтение, запись чанков и вычисление хеша одновременно
         while let Some(chunk) = multipart_field.chunk().await.map_err(|e| {
             TranscribeError::FileOperation(format!("Failed to read chunk: {}", e))
         })? {
@@ -193,6 +195,10 @@ impl FileStorage {
                 )));
             }
 
+            // Обновляем хеш
+            hasher.update(&chunk);
+
+            // Записываем в файл
             file.write_all(&chunk).await.map_err(|e| {
                 TranscribeError::FileOperation(format!("Failed to write chunk: {}", e))
             })?;
@@ -211,13 +217,18 @@ impl FileStorage {
             TranscribeError::FileOperation(format!("Failed to sync file: {}", e))
         })?;
 
+        // Вычисляем финальный хеш
+        let hash_bytes = hasher.finalize();
+        let file_hash = hex::encode(hash_bytes);
+
         info!(
             file_path = %file_path,
             total_bytes = total_bytes,
-            "File saved successfully"
+            file_hash = %file_hash,
+            "File saved successfully with hash"
         );
 
-        Ok(total_bytes)
+        Ok((total_bytes, file_hash))
     }
 
     /// Удаляет файл (для rollback при ошибке)
@@ -294,14 +305,50 @@ async fn handle_transcribe(
         // Генерируем безопасный путь
         let file_path = storage.generate_file_path(&original_filename)?;
 
-        // Сохраняем файл потоком
-        return match storage.save_file_streaming(&file_path, field).await {
-            Ok(file_size) => {
+        // Сохраняем файл потоком и сразу вычисляем хеш
+        return match storage.save_file_streaming_with_hash(&file_path, field).await {
+            Ok((file_size, file_hash)) => {
                 info!(
                     file_path = %file_path,
                     file_size = file_size,
-                    "File saved"
+                    file_hash = %file_hash,
+                    "File saved and hashed"
                 );
+
+                // Проверяем, есть ли уже результат с этим хешем
+                let cached_result_path = format!("{}/cache_{}.json", storage.tmp_dir, file_hash);
+                if tokio::fs::metadata(&cached_result_path).await.is_ok() {
+                    // Валидируем кешированный файл
+                    match tokio::fs::read_to_string(&cached_result_path).await {
+                        Ok(content) if serde_json::from_str::<serde_json::Value>(&content).is_ok() => {
+                            info!(file_hash = %file_hash, "Cache hit! Returning cached result");
+                            
+                            // Удаляем загруженный файл, он нам не нужен
+                            let _ = storage.delete_file(&file_path).await;
+                            
+                            // Копируем кешированный результат под новый task_id
+                            let task_id = Uuid::new_v4().to_string();
+                            let result_path = format!("{}/{}.json", storage.tmp_dir, task_id);
+                            
+                            match tokio::fs::copy(&cached_result_path, &result_path).await {
+                                Ok(_) => {
+                                    return Ok(Json(TranscriptionResponse {
+                                        task_id,
+                                        status: "completed".to_string(),
+                                        file_path: result_path,
+                                    }));
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to copy cached result, will process normally");
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!(file_hash = %file_hash, "Corrupted cache file detected, removing and processing normally");
+                            let _ = tokio::fs::remove_file(&cached_result_path).await;
+                        }
+                    }
+                }
 
                 // Создаём задачу для воркера
                 let task = TranscriptionTask {
@@ -311,6 +358,7 @@ async fn handle_transcribe(
                     message_id: query_params.message_id.clone(),
                     filename: original_filename.clone(),
                     created_at: chrono::Utc::now().timestamp(),
+                    file_hash,
                 };
 
                 // Отправляем в RabbitMQ
@@ -383,25 +431,53 @@ async fn get_result(
 // MAIN
 // ============================================================================
 
-/// Фоновая задача для удаления старых файлов результатов
-async fn cleanup_task(dir: String, max_age_secs: u64) {
+/// Фоновая задача для удаления старых файлов результатов и кеша
+async fn cleanup_task(dir: String, result_max_age_secs: u64, cache_max_age_secs: u64) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 10)); // Каждые 10 минут
     loop {
         interval.tick().await;
+        
+        let mut deleted_results = 0;
+        let mut deleted_cache = 0;
+        
         if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 if let Ok(metadata) = entry.metadata().await {
                     if let Ok(modified) = metadata.modified() {
                         if let Ok(elapsed) = modified.elapsed() {
-                            // Если файл старше указанного времени (по умолчанию 1 час)
-                            if elapsed.as_secs() > max_age_secs {
-                                let _ = tokio::fs::remove_file(entry.path()).await;
-                                info!("Cleaned up old result file: {:?}", entry.path());
+                            let path = entry.path();
+                            let filename = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                            
+                            // Кеш-файлы (cache_*.json) удаляются через cache_max_age_secs
+                            if filename.starts_with("cache_") && filename.ends_with(".json") {
+                                if elapsed.as_secs() > cache_max_age_secs {
+                                    if tokio::fs::remove_file(&path).await.is_ok() {
+                                        deleted_cache += 1;
+                                    }
+                                }
+                            }
+                            // Обычные результаты (UUID.json) удаляются через result_max_age_secs
+                            else if filename.ends_with(".json") {
+                                if elapsed.as_secs() > result_max_age_secs {
+                                    if tokio::fs::remove_file(&path).await.is_ok() {
+                                        deleted_results += 1;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+        
+        if deleted_results > 0 || deleted_cache > 0 {
+            info!(
+                deleted_results = deleted_results,
+                deleted_cache = deleted_cache,
+                "Cleanup completed"
+            );
         }
     }
 }
@@ -438,8 +514,10 @@ async fn main() {
         rabbitmq: RabbitMQPublisher::new(channel),
     };
 
-    // Запускаем фоновую задачу по очистке старых JSON результатов (TTL = 1 час)
-    tokio::spawn(cleanup_task("/tmp/transcribe".to_string(), 3600));
+    // Запускаем фоновую задачу по очистке старых файлов
+    // Результаты (UUID.json) удаляются через 1 час (3600 сек)
+    // Кеш-файлы (cache_*.json) удаляются через 7 дней (604800 сек)
+    tokio::spawn(cleanup_task("/tmp/transcribe".to_string(), 3600, 604800));
 
     // Создаём роутер
     let app = Router::new()

@@ -14,6 +14,8 @@ pub struct TranscriptionTask {
     pub filename: String,
     /// Таймстамп создания
     pub created_at: i64,
+    /// SHA256 хеш файла для кеширования
+    pub file_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -9,6 +9,7 @@ use tokio::fs;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
+#[allow(dead_code)]
 struct TranscriptionConsumer {
     channel: amqprs::channel::Channel,
 }
@@ -107,8 +108,21 @@ impl AsyncConsumer for TranscriptionConsumer {
                                 });
                                 
                                 if let Ok(result_string) = serde_json::to_string(&final_result) {
-                                    if fs::write(&result_json_path, result_string).await.is_ok() {
+                                    if fs::write(&result_json_path, result_string.clone()).await.is_ok() {
                                         info!("Transcription complete. Saved to {}", result_json_path);
+                                        
+                                        // Сохраняем также кешированную версию по хешу файла
+                                        let cache_path = format!("/tmp/transcribe/cache_{}.json", task.file_hash);
+                                        if let Err(e) = fs::write(&cache_path, result_string).await {
+                                            warn!(
+                                                error = %e,
+                                                hash = %task.file_hash,
+                                                cache_path = %cache_path,
+                                                "Failed to save cached result"
+                                            );
+                                        } else {
+                                            info!("Cached result saved to {}", cache_path);
+                                        }
                                     } else {
                                         error!("Failed to save final JSON for task {}", task.task_id);
                                     }
