@@ -526,7 +526,7 @@ async fn main() {
     // Создаём роутер
     let app = Router::new()
         .route("/health", get(health))
-        .route("/result/:task_id", get(get_result))
+        .route("/result/{task_id}", get(get_result))
         .route(
             "/transcribe",
             post(handle_transcribe)
